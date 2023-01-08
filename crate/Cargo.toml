@@ -1,0 +1,23 @@
+[package]
+name = "mtviz"
+version = "1.0.0"
+edition = "2021"
+description = "Mersenne Twister internals, compiled to WebAssembly for the visualizer"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# none: the crate is no_std + alloc and talks to JavaScript through a plain C ABI
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+
+[profile.dev]
+panic = "abort"
