@@ -1,3 +1,2 @@
-//! Mersenne Twister visualizer.
-
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub mod mt;
+pub mod params;
