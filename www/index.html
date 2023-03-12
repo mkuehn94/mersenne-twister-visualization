@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mersenne Twister</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header>
+    <h1>Mersenne Twister</h1>
+    <p class="sub">a look inside the generator</p>
+  </header>
+  <main>
+    <section>
+      <h2>what is this</h2>
+      <p>Notes and experiments for MT19937 and friends. The Rust side is
+         already in place; the WebAssembly build will drive the page later.</p>
+    </section>
+    <section>
+      <h2>todo</h2>
+      <ul>
+        <li>wire up the wasm module</li>
+        <li>show the state array and the twist step</li>
+        <li>add the other generators (SFMT, TinyMT)</li>
+      </ul>
+    </section>
+  </main>
+  <footer>2023</footer>
+</body>
+</html>
