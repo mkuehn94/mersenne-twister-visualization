@@ -5,3 +5,4 @@ pub mod stats;
 pub mod fm;
 pub mod vm;
 pub mod sources;
+pub mod sfmt;
