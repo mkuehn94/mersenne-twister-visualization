@@ -3,3 +3,5 @@ pub mod params;
 pub mod gf2;
 pub mod stats;
 pub mod fm;
+pub mod vm;
+pub mod sources;
