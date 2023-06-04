@@ -7,3 +7,4 @@ pub mod vm;
 pub mod sources;
 pub mod sfmt;
 pub mod tinymt;
+pub mod kinds;
