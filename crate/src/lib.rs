@@ -6,3 +6,4 @@ pub mod fm;
 pub mod vm;
 pub mod sources;
 pub mod sfmt;
+pub mod tinymt;
