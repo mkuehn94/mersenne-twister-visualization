@@ -113,7 +113,7 @@ pub struct MtConfig {
 }
 
 #[inline]
-    fn wmask(w: u32) -> u64 {
+pub fn wmask(w: u32) -> u64 {
     if w >= 64 { u64::MAX } else { (1u64 << w) - 1 }
 }
 #[inline]
