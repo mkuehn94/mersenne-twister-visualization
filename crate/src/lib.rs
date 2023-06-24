@@ -8,3 +8,4 @@ pub mod sources;
 pub mod sfmt;
 pub mod tinymt;
 pub mod kinds;
+pub mod crack;
