@@ -9,3 +9,6 @@ pub mod sfmt;
 pub mod tinymt;
 pub mod kinds;
 pub mod crack;
+pub mod bigdec;
+pub mod api;
+pub mod allocator;
