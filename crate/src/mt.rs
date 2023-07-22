@@ -31,7 +31,7 @@ pub fn seed_seq_generate(seed: u32, out: &mut [u32]) {
     for v in out.iter_mut() {
         *v = params::SEED_SEQ_FILL;
     }
-    let s = 1usize;
+    let s = 1usize; // s is 1 here: only one seed word ever goes through
     let t = if n >= 623 { 11 } else if n >= 68 { 7 } else if n >= 39 { 5 } else if n >= 7 { 3 } else { (n - 1) / 2 };
     let p = (n - t) / 2;
     let q = p + t;
@@ -131,18 +131,10 @@ impl MtConfig {
     pub fn from_params(p: &MtParams) -> MtConfig {
         MtConfig::new(p.w, p.n, p.m, p.r, p.a, p.u, p.d, p.s, p.b, p.t, p.c, p.l, p.f)
     }
-    pub fn mt19937() -> MtConfig {
-        MtConfig::from_params(&params::MT19937)
-    }
-    pub fn mt19937_64() -> MtConfig {
-        MtConfig::from_params(&params::MT19937_64)
-    }
-    pub fn mt11213b() -> MtConfig {
-        MtConfig::from_params(&params::MT11213B)
-    }
-    pub fn tt800() -> MtConfig {
-        MtConfig::from_params(&params::TT800)
-    }
+    pub fn mt19937() -> MtConfig { MtConfig::from_params(&params::MT19937) }
+    pub fn mt19937_64() -> MtConfig { MtConfig::from_params(&params::MT19937_64) }
+    pub fn mt11213b() -> MtConfig { MtConfig::from_params(&params::MT11213B) }
+    pub fn tt800() -> MtConfig { MtConfig::from_params(&params::TT800) }
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(w: u32, n: usize, m: usize, r: u32, a: u64, u: u32, d: u64, s: u32, b: u64, t: u32, c: u64, l: u32, f: u64) -> MtConfig {
@@ -179,9 +171,7 @@ impl MtConfig {
     pub fn p(&self) -> usize {
         self.n * self.w as usize - self.r as usize
     }
-    pub fn wm(&self) -> u64 {
-        wmask(self.w)
-    }
+    pub fn wm(&self) -> u64 { wmask(self.w) }
 
     pub fn set_r(&mut self, r: u32) {
         self.r = r;
@@ -222,12 +212,12 @@ impl MtConfig {
     pub fn twist_word(&self, xk: u64, xk1: u64, xkm: u64) -> u64 {
         let y = (xk & self.umask).wrapping_add(xk1 & self.lmask) & self.wm();
         let low = if self.lowbit_from_xk { xk & 1 } else { y & 1 };
-        let ya = (y >> 1) ^ if low != 0 { self.a } else { 0 };
+        let ya = (y >> 1) ^ if low == 1 { self.a } else { 0 };
         (xkm ^ ya) & self.wm()
     }
 
     pub fn out_transform(&self, z: u64) -> u64 {
-        ((z >> self.out_shift.min(63)) ^ self.out_xor) & self.out_and
+        ((z >> self.out_shift) ^ self.out_xor) & self.out_and
     }
 }
 
@@ -284,7 +274,9 @@ impl Mt {
 
     pub fn seed(&mut self, seed: u64) {
         let s = self.effective_seed(seed);
+        // self.count = 0;   // nope, has to happen after the discard loop
         self.seed_raw(s);
+        // discard some outputs if configured (e.g. ECJ does this)
         for _ in 0..self.cfg.discard {
             self.next();
         }
@@ -297,13 +289,7 @@ impl Mt {
         let n = c.n;
         let wm = c.wm();
         match c.seed_mode {
-            SeedMode::InitGenrand => {
-                self.x[0] = s & wm;
-                for i in 1..n {
-                    let p = self.x[i - 1];
-                    self.x[i] = c.f.wrapping_mul(p ^ shr(p, c.w.saturating_sub(2))).wrapping_add(i as u64) & wm;
-                }
-            }
+            SeedMode::InitGenrand => self.init_genrand_const(s),
             SeedMode::Knuth69069 => {
                 self.x[0] = s & wm;
                 for i in 1..n {
@@ -368,11 +354,12 @@ impl Mt {
     }
 
     fn init_genrand_const(&mut self, s: u64) {
-        let c = self.cfg.clone();
-        self.x[0] = s & c.wm();
+        let c = &self.cfg;
+        let wm = c.wm();
+        self.x[0] = s & wm;
         for i in 1..c.n {
             let p = self.x[i - 1];
-            self.x[i] = c.f.wrapping_mul(p ^ shr(p, c.w.saturating_sub(2))).wrapping_add(i as u64) & c.wm();
+            self.x[i] = c.f.wrapping_mul(p ^ shr(p, c.w.saturating_sub(2))).wrapping_add(i as u64) & wm;
         }
     }
 
@@ -593,12 +580,4 @@ mod tests {
             }
         }
     }
-}
-
-/// popcount, the obvious way (replaced by count_ones a few days later)
-fn bit_count(x: u64) -> u32 {
-    let mut n = 0u32;
-    let mut v = x;
-    while v != 0 { v &= v - 1; n += 1; }
-    n
 }
