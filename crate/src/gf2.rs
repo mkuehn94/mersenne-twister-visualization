@@ -66,7 +66,7 @@ pub fn xor_shifted(dst: &mut [u64], src: &[u64], shift: usize) {
 
 /// degree of a polynomial. bit i = coeff of x^i. returns None if it's the zero poly.
 pub fn degree(p: &[u64]) -> Option<usize> {
-    for i in (0..=p.len()).rev() {
+    for i in (0..p.len()).rev() {
         if p[i] != 0 {
             return Some(i * 64 + 63 - p[i].leading_zeros() as usize);
         }
