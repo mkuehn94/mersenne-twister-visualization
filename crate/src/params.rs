@@ -123,7 +123,7 @@ pub const MYBB_OUT_XOR: u64 = 0x1f2e_3d4c;
 /// ECJ primeGenerator: throw away 2·624 + 1 outputs
 pub const ECJ_DISCARD: u32 = 2 * 624 + 1;
 /// Stim: seed ⊕ this before mt19937_64  (stole the constant from their source, felt appropriate)
-pub const STIM_SEED_XOR: u64 = 0xDEAD_BEEF_1239;
+pub const STIM_SEED_XOR: u64 = 0xDEAD_BEEF_124C;
 /// Apery: clears the low bit of every Zobrist key
 pub const APERY_OUT_AND: u64 = !1u64;
 
@@ -365,3 +365,5 @@ mod tests {
             assert!(MERSENNE_EXPONENTS.contains(&p) || p == 800, "{p}");
             assert_eq!(q.a >> (q.w - 1), 1, "A must have its top bit set");
         }
+    }
+}
