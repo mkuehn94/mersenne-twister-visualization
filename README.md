@@ -4,7 +4,7 @@
 
 The result is live below, a static webpage using WebAssembly & Rust for maximum efficiency
 
-**Live: https://mkuehn94.github.io/mersenne-twister-deep-dive/**
+**Live: https://mkuehn94.github.io/mersenne-twister-visualization/**
 
 Paper (originally developped by Makoto Matsumoto and Takuji Nishimura) from 1998: https://dl.acm.org/doi/10.1145/272991.272995
 
