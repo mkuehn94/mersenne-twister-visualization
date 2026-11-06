@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mersenne Twister</title>
+<meta name="description" content="The Mersenne Twister taken apart: a line-by-line debugger, the GF(2) linear algebra behind its period, equidistribution, distributions, and its weaknesses — computed live in Rust/WebAssembly.">
+<link rel="stylesheet" href="vendor/katex/katex.min.css">
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%231f5fd1' stroke-width='4' stroke-dasharray='3 1.5'/%3E%3C/svg%3E">
+</head>
+<body>
+<div class="loading" id="loading">loading WebAssembly…</div>
+
+<header class="topbar">
+  <span class="mark">MT19937 Toolbox</span>
+  <nav id="nav">
+    <a href="#notation">Notation</a>
+    <a href="#debugger">Debugger</a>
+    <a href="#twist">Twist</a>
+    <a href="#period">Period</a>
+    <a href="#tempering">Tempering</a>
+    <a href="#build">Build your own</a>
+    <a href="#stats">Distributions</a>
+    <a href="#weak">Weak spots</a>
+    <a href="#variants">Variants</a>
+  </nav>
+  <button class="theme" onclick="MTV.toggleTheme()" title="switch light / dark">◐</button>
+</header>
+
+<main>
+  <!-- ============================================================ hero -->
+  <div class="hero">
+    <h1>Understanding the Mersenne Twister Algorithm</h1>
+    <p class="sub">Understanding one of the world's most popular pseudorandom number generators. Build your own, reverse engineer one by input numbers all static in your browser.</p>
+    <div class="formula">
+      <div data-tex="x_{k+n} \;=\; x_{k+m} \;\oplus\; \big(\, x_k^{\,u} \,\big|\, x_{k+1}^{\,l} \,\big)\, A, \qquad z_k = T(x_k)" data-display></div>
+      <p class="fcap">This equation basically is the whole generator. It holds a state array of 624 numbers. Generation starts with the first bit of <i>k</i> attaches it onto the low 31 bits of number <i>k+1</i>, shifts and scrambles that a bit (represented by matrix <i>A</i>) and XORs the result with number <i>k+397</i>. Then the number gets one more scramble <i>T</i> (called <b>tempting</b>) and out comes <i>z</i><sub>k</sub>.</p>
+      <div data-tex="\text{period} \;=\; 2^{\,nw-r}-1 \;=\; 2^{19937}-1" data-display></div>
+      <p class="fcap">A important parameter that measures when sequences repeat. It's 2<sup>19937</sup> &minus; so basically impossible (SHA-256 collison never happened and that's only 2^<sup>256</sup>)</p>
+      <p class="fcap">In linear algebra look up the term <b>periodic matrix</b> for a deeper understanding</p>
+    </div>
+    <h3>The parameters</h3>
+    <div class="datasheet" id="datasheet"></div>
+    <h3>Example output with seed 0 and default params:</h3>
+    <div class="ticker" id="ticker"></div>
+  </div>
+
+  <!-- ============================================================ notation -->
+  <section id="notation">
+    <h2>Notation</h2>
+    <p class="lede">The math can look quite complex, while they are really not. Almost everything is just bit operations you'd write in C as <code>^</code>, <code>&amp;</code>, <code>&gt;&gt;</code>.</p>
+    <p class="lede">A lot are statistic parameters/metrics you can just google</p>
+    <div class="tbl-wrap"><table class="tbl notation">
+      <tr><th>symbol</th><th>meaning</th><th>example</th></tr>
+      <tr><td data-tex="a \oplus b"></td><td><b>XOR</b>, <code>a ^ b</code> in C. one of the two bits is 1 -> 1 else 0</td><td data-tex="1100 \oplus 1010 = 0110"></td></tr>
+      <tr><td data-tex="a \land b,\;\; a \lor b"></td><td><b>AND</b> / <b>OR</b>, <code>a &amp; b</code> and <code>a | b</code>. requiring exclusive or simultanious 1 for both bits</td><td data-tex="1100 \land 1010 = 1000"></td></tr>
+      <tr><td data-tex="x \gg k,\;\; x \ll k"></td><td>right/left shift by <i>k</i> bits. padded with zeros.</td><td data-tex="1101 \gg 1 = 0110"></td></tr>
+      <tr><td data-tex="x^{u} \,\big|\, y^{l}"></td><td>upper bits of <i>x</i> appended to the lower bits of <i>y</i>. For MT19937: the top 1 bit of <i>x</i> plus the low 31 bits of <i>y</i>.</td><td data-tex="1\,|\,0110011\dots"></td></tr>
+      <tr><td data-tex="x \bmod 2^{32}"></td><td>wrapping around, exactly like a <code>uint32_t</code> overflowing. or modulo 2^32</td><td data-tex="2^{32}+5 \equiv 5"></td></tr>
+      <tr><td data-tex="\mathbb{F}_2,\ \mathrm{GF}(2)"></td><td><b>probably the most important operator to understand</b> a field with just 0 and 1, where + is XOR and × is AND. Every MT operation (XOR, shift, AND with a fixed mask) is linear over F<sub>2</sub>, so the whole generator becomes a giant matrix. That's the trick behind basically everything about MT.</td><td data-tex="1 + 1 = 0"></td></tr>
+      <tr><td data-tex="\operatorname{popcount}(x)"></td><td>number of bits (Hamming weight). shows up in the zero-excess plot.</td><td data-tex="\operatorname{popcount}(1011_2) = 3"></td></tr>
+      <tr><td data-tex="\varphi(t),\ \deg \varphi"></td><td>the polynomial of the big matrix, with bits as coefficients. the degree is the size of the recurrence, and if it's irreducible and 2<sup>deg</sup>&minus;1 is prime you get the full period.</td><td data-tex="t^3 + t + 1"></td></tr>
+      <tr><td>Berlekamp–Massey, <span data-tex="L"></span></td><td>an algorithm that consumes a bit sequence and finds the shortest linear recurrence (LFSR) that gets produced by it. its length <i>L</i> is the linear complexity. truly random bits give <i>L</i> ≈ n/2, MT19937 gets stuck at 19937.</td><td data-tex="s_n = s_{n-1} \oplus s_{n-3} \Rightarrow L = 3"></td></tr>
+      <tr><td data-tex="T,\ T^{-1}"></td><td>tempering and its inverse (MT exclusive algorithm). <i>T</i> only mixes bits inside one word, and it can be undone exactly. demonstrated in the weak spots section.</td><td data-tex="z = T(x),\ x = T^{-1}(z)"></td></tr>
+      <tr><td data-tex="k(v)"></td><td>k-distribution (also very important for RNGs): the largest possible <i>k</i> so that every pattern of the top <i>v</i> bits of <i>k</i> consecutive outputs shows up equally often over the full period. higher = better, ⌊p/v⌋ would be the maximum.</td><td data-tex="k(32) = 623"></td></tr>
+      <tr><td data-tex="\chi^2,\ p"></td><td>chi-squared: distance of the histogram counts from expectation. the p-value is the chance that a perfectly random source looks at least this bad. if p becomes tiny i.e(p &lt; 0.001) means there is a bias somewhere.</td><td data-tex="p = 0.42 \text{ fine},\ p = 10^{-9} \text{ busted}"></td></tr>
+      <tr><td data-tex="r_h"></td><td><b>autocorrelation</b> is there some correlation between the current number and a number generated <i>h</i> steps later? for a good generator every <i>r</i><sub>h</sub> should obviously be close to 0 and about 95% of the bars stay inside the band ±1.96/√N. bars sticking way out = correlation is present between numbers that should be indipendant.</td><td data-tex="r_1 \approx 0"></td></tr>
+      <tr><td data-tex="\hat\pi_N,\ \#\{\dots\}"></td><td><b>Monte Carlo π</b>: Imagine a circle in a square. coordinates are drawn from the generator. it measures how uniformly the distribution is by estimating PI. at infinite samples drawn and perfect uniform distribution we would estimate PI perfectly.</td><td data-tex="\hat\pi_{10^6} \approx 3.141\dots"></td></tr>
+      <tr><td data-tex="\mathcal N(0,1),\ \varphi(x)"></td><td>Just a normal distribution. careful, same notation φ as the polynomial. Normals are defined by Mean and standard deviation.</td><td data-tex="\varphi(0) \approx 0.399"></td></tr>
+    </table></div>
+  </section>
+
+  <!-- ============================================================ debugger -->
+  <section id="debugger">
+    <h2>MT Live Debugger</h2>
+    <p class="lede">step through it, flip bits, watch the process in action. the state is represented by a ring, but you can also image a large matrix, but i chose a ring to represent the relation between states. blue cells get read, orange ones get written, and the chords show the twist reaching from <span data-tex="x_k"></span> over to <span data-tex="x_{k+1}"></span> and <span data-tex="x_{k+397}"></span>. other classes of generators can be selected from the dropdown.</p>
+    <div id="dbg-main"></div>
+  </section>
+
+  <!-- ============================================================ twist -->
+  <section id="twist">
+    <h2>twist as a matrix</h2>
+    <p class="lede">every single operation is an XOR, a shift or an AND with a constant. all of those are linear over <span data-tex="\mathbb{F}_2=\{0,1\}"></span>, so the whole generator is just one huge matrix applied over and over.</p>
+    <div class="cols two">
+      <div>
+        <div class="eq" data-tex="xA = \begin{cases} x \gg 1 & x_0 = 0 \\ (x \gg 1) \oplus a & x_0 = 1 \end{cases} \qquad A = \begin{pmatrix} & 1 & & \\ & & \ddots & \\ & & & 1 \\ a_{w-1} & a_{w-2} & \cdots & a_0 \end{pmatrix}"></div>
+        <div class="eq" data-tex="y = \underbrace{x_k^{\,u}}_{\text{top } w-r \text{ bits}} \big|\; \underbrace{x_{k+1}^{\,l}}_{\text{low } r \text{ bits}}, \qquad x_{k+n} = x_{k+m} \oplus yA"></div>
+        <div class="eq" data-tex="X_k = \big(x_k^{\,u}, x_{k+1}, \dots, x_{k+n-1}\big)^{\!\top} \in \mathbb{F}_2^{\,p}, \quad p = nw - r"></div>
+        <div class="eq" data-tex="X_{k+1} = B\,X_k"></div>
+        <div class="eq" data-tex="\chi_B(t) = \det(tI - B) = t^{19937} + \dots + 1 \qquad \text{(degree } p\text{)}"></div>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>The 32 × 32 bit matrix A of MT19937</span><span class="note">row i = where bit i ends up</span></div>
+        <div class="matrix"><canvas id="mat-A"></canvas></div>
+        <div class="mcap" data-tex="a = \texttt{0x9908b0df}: \text{ a shifted identity plus one row}"></div>
+      </div>
+    </div>
+    <h3>B as an example</h3>
+    <div class="cols two">
+      <div class="panel">
+        <div class="ptitle"><span id="toyB-title">B for w = 8, n = 16, r = 1 (p = 127)</span><span class="note">dark = 1</span></div>
+        <div class="matrix"><canvas id="mat-B"></canvas></div>
+      </div>
+      <div>
+        <p class="small">the full 19937 × 19937 is way to big, so here's a tiny twister with the same shape. all block rows except the last just copy a word over (the identity blocks on the long diagonal). generation of the next word is in the last line: <span data-tex="A"></span> hits the first two input blocks, and there's an identity block sitting at <span data-tex="x_{k+m}"></span>.</p>
+        <div class="eq" data-tex="B = \begin{pmatrix} 0 & I & & & \\ & 0 & I & & \\ & & \ddots & \ddots & \\ & & & 0 & I \\ S_u & S_l & \cdots I_{(m)} \cdots & & 0 \end{pmatrix}"></div>
+        <div class="eq" data-tex="x_{k+n} = \underbrace{x_k^u A}_{S_u} \oplus \underbrace{x_{k+1}^l A}_{S_l} \oplus x_{k+m}"></div>
+        <div id="toyB-poly" class="small"></div>
+        <p class="note">MT19937's own B can be imagined to look very similar, just 19 937 × 19 937.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ period -->
+  <section id="period">
+    <h2>Why 19937?</h2>
+    <p class="lede">thats not just a fun fact to know where the name comes from but essential to the lack of reoccurring numbers. the period of a matrix recurrence comes from its <a href="https://mathworld.wolfram.com/CharacteristicPolynomial.html">characteristic polynomial</a> <span data-tex="\varphi"></span>.Matsumoto and Nishimura picked <span data-tex="p"></span> so that <span data-tex="2^p-1"></span> is a prime. then you only need to check that <span data-tex="\varphi"></span> is irreducible and you never have to factor a 6002-digit number. that's why it's called MT19937.</p>
+    <div class="eq big" data-tex="p = nw - r = 624\cdot 32 - 31 = 19937, \qquad 2^{19937}-1 \text{ is prime}"></div>
+    <div class="eq" data-tex="\varphi \text{ irreducible} \;\wedge\; 2^p-1 \text{ prime} \;\Longrightarrow\; \operatorname{ord}(t \bmod \varphi) = 2^p - 1 \;\Longrightarrow\; \text{every state } X \neq 0 \text{ has period } 2^p-1"></div>
+    <div class="cols two">
+      <div class="panel">
+        <div class="ptitle"><span>1 · Get φ back from nothing but the output</span></div>
+        <div class="eq" data-tex="s_j = \text{bit 31 of } x_j, \quad j = 0,\dots,2p+63 \;\xrightarrow{\text{Berlekamp–Massey}}\; \varphi(t), \;\; \deg\varphi = L"></div>
+        <div class="toolbar"><button class="primary" id="bm-run">Run Berlekamp–Massey on 39 938 bits</button></div>
+        <div id="bm-out" class="small"></div>
+        <div id="bm-terms"></div>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>2 · Prove φ is irreducible (in your browser!)</span></div>
+        <div class="eq" data-tex="t^{2^{p}} \equiv t \pmod{\varphi(t)} \qquad \text{19 937 squarings in } \mathbb{F}_2[t]/(\varphi)"></div>
+        <div class="toolbar"><button class="primary" id="irr-run" disabled>Square 19 937 times</button><span class="note" id="irr-note">run step 1 first</span></div>
+        <div class="progress"><div id="irr-bar"></div></div>
+        <div id="irr-out" class="small"></div>
+      </div>
+    </div>
+    <h3>Linear complexity profile</h3>
+    <div class="cols wide-left">
+      <div class="panel"><div class="ptitle"><span>L(n): the shortest linear recurrence that explains the first n output bits</span></div><div id="lc-plot"></div><div class="stat" id="lc-stat"></div></div>
+      <div>
+        <div class="eq" data-tex="\mathbb{E}\,L(n) \approx \tfrac{n}{2} \;\;\text{for truly random bits}"></div>
+        <div class="eq" data-tex="L(n) = 19937 \;\;\text{for all } n \ge 2\cdot 19937"></div>
+        <p class="small">for the first ~39 874 bits MT looks exactly like coin flips. then the line just goes flat, because the bits follow a recurrence of degree 19 937 and Berlekamp–Massey has it figured out. that's why MT fails TestU01's linear complexity tests (a short LCG would fail them way earlier).</p>
+      </div>
+    </div>
+    <h3>The prime itself, all of it</h3>
+    <p class="small" id="digits-cap"></p>
+    <div class="digits" id="digits"></div>
+  </section>
+
+  <!-- ============================================================ tempering -->
+  <section id="tempering">
+    <h2>Tempering and equidistribution</h2>
+    <p class="lede">the raw words <span data-tex="x_k"></span> already have the full period, so why scramble them again? because the raw top bits aren't spread out nicely when you look at several outputs at once. tempering is a fixed, invertible matrix <span data-tex="T"></span> that shuffles bits inside each word to fix exactly that.</p>
+    <div class="eq" data-tex="\begin{aligned} y &\leftarrow y \oplus ((y \gg 11) \land d) & y &\leftarrow y \oplus ((y \ll 7) \land \texttt{0x9d2c5680}) \\ y &\leftarrow y \oplus ((y \ll 15) \land \texttt{0xefc60000}) & y &\leftarrow y \oplus (y \gg 18) \end{aligned} \qquad z = xT"></div>
+    <div class="cols two">
+      <div class="panel">
+        <div class="ptitle"><span>Click bits of y and watch the four steps</span><span class="note" id="tx-hex"></span></div>
+        <div class="toggle-bits" id="tx-in"></div>
+        <div class="bits" id="tx-rows" style="margin-top:12px"></div>
+        <div class="toolbar"><button id="tx-rand">Random y</button><button id="tx-one">Single bit</button><button id="tx-clear">Clear</button></div>
+      </div>
+      <div class="cols" style="grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px">
+        <div class="panel"><div class="ptitle"><span>T</span><span class="note">row i = T(eᵢ)</span></div><div class="matrix"><canvas id="mat-T"></canvas></div></div>
+        <div class="panel"><div class="ptitle"><span>T⁻¹</span><span class="note">you need this to clone MT</span></div><div class="matrix"><canvas id="mat-Ti"></canvas></div></div>
+      </div>
+    </div>
+    <h3>k-distribution to v-bit accuracy</h3>
+    <div class="eq" data-tex="X \mapsto \big(\operatorname{top}_v z_0,\, \operatorname{top}_v z_1, \dots, \operatorname{top}_v z_{k-1}\big) \;\text{ is onto } \mathbb{F}_2^{\,kv} \iff \text{every } kv\text{-bit pattern occurs equally often}"></div>
+    <div class="eq" data-tex="k(v) \le \Big\lfloor \frac{p}{v} \Big\rfloor, \qquad \text{MT19937: } k(32) = 623 = \Big\lfloor \frac{19937}{32} \Big\rfloor \;\;\text{(optimal at full word size)}"></div>
+    <div class="cols wide-left">
+      <div class="panel">
+        <div class="ptitle"><span id="kd-title">k(v) for a 607-bit twister, same twist with and without tempering</span></div>
+        <div id="kd-plot"></div>
+        <div class="stat" id="kd-stat"></div>
+      </div>
+      <div>
+        <p class="small">this is computed exactly, no sampling: k(v) is the rank of a big GF(2) matrix whose rows are "bit j of output t" and whose columns are the 607 state bits. without tempering it already misses the bound from v = 2 on. put MT19937's masks in and most of that gap disappears. pretty convincing argument for those weird constants.</p>
+        <div class="eq" data-tex="\Delta = \sum_{v=1}^{w} \Big(\Big\lfloor \frac{p}{v} \Big\rfloor - k(v)\Big)"></div>
+        <div class="toolbar"><button id="kd-run">Recompute</button><span class="note">or design your own below</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ build -->
+  <section id="build">
+    <h2>Build your own Mersenne Twister</h2>
+    <p class="lede">this is the fun part. pick a size where <span data-tex="p = nw-r"></span> is a Mersenne exponent, then hunt for a twist vector <span data-tex="a"></span> the same way Matsumoto and Nishimura did back in the 90s: throw random <span data-tex="a"></span>'s at it and keep one whose <span data-tex="\varphi"></span> turns out irreducible. after that mess with the tempering and see what happens to k(v).</p>
+    <div class="toolbar">
+      <label class="inl">size <select id="bd-preset"></select></label>
+      <span class="note" id="bd-p"></span>
+    </div>
+    <div class="cols two">
+      <div class="panel">
+        <div class="ptitle"><span>Parameters</span><span class="note">hex or decimal</span></div>
+        <div class="paramgrid" id="bd-params"></div>
+        <div class="toolbar">
+          <button class="primary" id="bd-search">Search for a</button>
+          <button id="bd-test">Test this a</button>
+          <button id="bd-period">Count the period</button>
+          <button id="bd-kdist">k-distribution</button>
+          <button id="bd-debug">Open in debugger</button>
+        </div>
+        <div class="progress"><div id="bd-bar"></div></div>
+        <div id="bd-status" class="small"></div>
+        <div id="bd-found" class="toolbar"></div>
+      </div>
+      <div>
+        <div class="eq" data-tex="\#\{\text{irreducible of degree } p\} \approx \frac{2^p}{p} \;\Rightarrow\; \Pr[\varphi \text{ irreducible}] \approx \frac{1}{p}"></div>
+        <div class="eq" data-tex="\text{reject if }\; \deg\varphi < p \;\;\vee\;\; \gcd\!\big(t^{2^d}-t,\, \varphi\big) \neq 1 \;(d \le 12) \;\;\vee\;\; t^{2^p} \not\equiv t"></div>
+        <div class="panel"><div class="ptitle"><span>Funnel</span><span class="note">how many candidates survive each check</span></div><div id="bd-funnel"></div></div>
+        <div class="panel" style="margin-top:14px"><div class="ptitle"><span>k(v) of this generator</span><span class="note">press k-distribution</span></div><div id="bd-kplot"></div><div class="stat" id="bd-kstat"></div></div>
+        <div class="panel" style="margin-top:14px"><div class="ptitle"><span>Transition matrix B</span><span class="note" id="bd-Bcap"></span></div><div class="matrix"><canvas id="bd-B"></canvas></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ stats -->
+  <section id="stats">
+    <h2>Distributions</h2>
+    <p class="lede">same tests, any source. flip over to RANDU, a plain 32-bit LCG or one of the broken MT ports from the catalog and see which pictures fall apart. (RANDU in the 3-D plot is my favorite.)</p>
+    <div class="toolbar">
+      <label class="inl">source <select id="st-src"></select></label>
+      <label class="inl">seed <input type="text" class="hex" id="st-seed" value="5489" size="10"></label>
+      <label class="inl">N <select id="st-n"><option>10000</option><option selected>100000</option><option>1000000</option></select></label>
+      <button class="primary" id="st-run">Draw again</button>
+    </div>
+    <div class="cols two">
+      <div class="panel">
+        <div class="ptitle"><span>Uniform: u = z / 2³²</span><span id="st-u-stat" class="note"></span></div>
+        <div class="eq" data-tex="\chi^2 = \sum_{i=1}^{50} \frac{(O_i - E_i)^2}{E_i}, \quad E_i = \tfrac{N}{50}, \quad p = Q\big(\tfrac{49}{2}, \tfrac{\chi^2}{2}\big)"></div>
+        <div id="st-u"></div>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>Normal via Box–Muller</span><span id="st-n-stat" class="note"></span></div>
+        <div class="eq" data-tex="z = \sqrt{-2\ln u_1}\,\cos(2\pi u_2) \sim \mathcal{N}(0,1), \qquad \varphi(x) = \tfrac{1}{\sqrt{2\pi}} e^{-x^2/2}"></div>
+        <div id="st-norm"></div>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>Central limit theorem</span><span id="st-c-stat" class="note"></span></div>
+        <div class="eq" data-tex="f_{S_k}(s) = \tfrac{1}{(k-1)!}\sum_{j=0}^{\lfloor s \rfloor} (-1)^j \tbinom{k}{j} (s-j)^{k-1}, \quad \bar U_k = \tfrac{S_k}{k} \to \mathcal N\big(\tfrac12, \tfrac{1}{12k}\big)"></div>
+        <div class="toolbar"><label class="inl">k = <input type="range" id="st-k" min="1" max="12" value="3"> <b id="st-kv">3</b></label></div>
+        <div id="st-clt"></div>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>Lag plot in 3-D: (uᵢ, uᵢ₊₁, uᵢ₊₂)</span><span class="note">drag to rotate</span></div>
+        <div class="eq" data-tex="\text{RANDU: } x_{k+2} \equiv 6x_{k+1} - 9x_k \pmod{2^{31}} \Rightarrow 15 \text{ planes}"></div>
+        <div class="chart"><canvas id="st-3d"></canvas></div>
+        <div class="toolbar"><button id="st-3d-planes">Show the RANDU view</button><button id="st-3d-spin">Spin</button></div>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>Bit raster: 256 outputs in a row</span><span class="note">rows = outputs, columns = bit 31 … 0</span></div>
+        <div class="chart"><canvas id="st-raster"></canvas></div>
+        <div class="ptitle" style="margin-top:12px"><span>Fraction of ones per bit position (N outputs)</span></div>
+        <div id="st-bias"></div>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>Autocorrelation</span><span class="note">band = ±1.96/√N, ~95% of bars should stay inside</span></div>
+        <div class="eq" data-tex="r_h = \frac{\sum_i (u_i - \frac12)(u_{i+h}-\frac12)}{(N-h)\,\sigma^2}"></div>
+        <div id="st-ac"></div>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>Monte Carlo π</span><span id="st-pi-stat" class="note"></span></div>
+        <div class="eq" data-tex="\hat\pi_N = \frac{4}{N}\,\#\{u_{2i}^2 + u_{2i+1}^2 < 1\}, \qquad \sigma(\hat\pi_N) \approx \frac{1.64}{\sqrt N}"></div>
+        <div id="st-pi"></div>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>Gaps between successive values</span><span id="st-g-stat" class="note"></span></div>
+        <div class="eq" data-tex="D = |u_{i+1} - u_i|, \qquad f_D(d) = 2(1-d)"></div>
+        <div id="st-gap"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ weak -->
+  <section id="weak">
+    <h2>Weak spots</h2>
+    <p class="lede">MT was made for simulations and it's great at that. it was never supposed to be used for anything secret though, and here's why: everything it does is linear and invertible, so 624 outputs give away the whole state. and then you can even walk it back to the seed.</p>
+    <h3>Attack: clone a generator from its own output</h3>
+    <p>say someone runs MT19937 with a <b>secret seed</b> and has already burned through an <b>unknown number</b> of outputs. all you get to see is the numbers it hands out. turns out that's enough to predict every number it will ever produce. watch:</p>
+    <div class="steps">
+      <div class="stepbox" id="atk-s1"><b>1. Observe</b><br>grab 624 outputs in a row: <span data-tex="z_j, z_{j+1}, \dots, z_{j+623}"></span>.</div>
+      <div class="stepbox" id="atk-s2"><b>2. Untemper each one</b><br>tempering undoes cleanly: <span data-tex="x_i = T^{-1}(z_i)"></span> hands back the hidden state word behind every output.</div>
+      <div class="stepbox" id="atk-s3"><b>3. Predict</b><br>624 state words in a row are the complete state. load them into a fresh MT and it has the same future as the victim.</div>
+      <div class="stepbox" id="atk-s4"><b>4. Rewind to the seed</b><br>the twist runs backwards too. walk back until the words look freshly seeded, invert the seeding, and <span data-tex="s"></span> and <span data-tex="j"></span> drop out.</div>
+    </div>
+    <div class="toolbar">
+      <label class="inl">victim <select id="atk-kind">
+        <option value="0">std::mt19937 (init_genrand)</option>
+        <option value="2">1998 seeding (69069)</option>
+        <option value="1">CPython random.seed</option>
+      </select></label>
+      <button id="atk-new">New secret generator</button>
+      <button class="primary" id="atk-run">Run</button>
+      <button id="atk-step">Observe + untemper one output</button>
+      <button id="atk-finish">Finish recovery</button>
+      <label class="inl">speed <input type="range" id="atk-speed" min="0" max="100" value="45"></label>
+      <span class="note" id="atk-speedlab"></span>
+    </div>
+    <div class="atk">
+      <div class="panel">
+        <div class="ptitle"><span>The victim (hidden)</span></div>
+        <div class="kv" id="atk-victim"></div>
+        <div class="outlog" id="atk-seen" style="margin-top:8px"></div>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span id="atk-ut-title">Untempering</span><span class="note">undo the 4 tempering steps, last one first</span></div>
+        <div class="bits" id="atk-bits"></div>
+        <div class="small" id="atk-check" style="margin-top:6px"></div>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>Recovered state</span><span class="note" id="atk-count"></span></div>
+        <div class="chart"><canvas id="atk-grid"></canvas><div class="tip" id="atk-tip"></div></div>
+        <div class="progress"><div id="atk-bar"></div></div>
+        <div class="note">one cell per state word, filled in as we get it · click a cell to untemper it line by line further down</div>
+      </div>
+    </div>
+    <div class="panel" id="atk-know-panel" style="margin-top:16px">
+      <div class="ptitle"><span>What the attacker knows</span><span class="note"><span class="k-unk">?</span> unknown · <span class="k-rng">range</span> narrowed down · <span class="k-ok">value</span> known exactly</span></div>
+      <div id="atk-know" class="know"></div>
+    </div>
+    <div class="panel" id="atk-pred" style="margin-top:16px">
+      <div class="ptitle"><span>Prediction: the clone vs the real generator</span></div>
+      <div id="atk-pred-body" class="small">Get all 624 words first. Until then the clone doesn't know the full state.</div>
+    </div>
+    <div class="eq" data-tex="x_i = T^{-1}(z_i)\;\; (i = j,\dots,j+623) \qquad\Longrightarrow\qquad x_{i+624} = x_{i+397} \oplus \big(x_i^u \,|\, x_{i+1}^l\big)A \;\;\text{for every later } i"></div>
+    <div class="eq" data-tex="\text{and backwards: }\; x_{i+624} \oplus x_{i+397} = \big(x_i^u \,|\, x_{i+1}^l\big)A \;\Rightarrow\; x_i^u,\ x_{i+1}^l \;\Rightarrow\; \dots \;\Rightarrow\; x_1 = f\cdot(s \oplus (s \gg 30)) + 1"></div>
+    <h3>Zoom in: untempering one word, line by line</h3>
+    <p class="small">each inverse step is a little loop and every pass pins down a few more bits (green underline = bits we know for sure now). click a cell in the recovered state above to load that output here.</p>
+    <div class="eq" data-tex="y = x \oplus (x \gg l) \;\Longrightarrow\; x = y \oplus (y \gg l) \oplus (y \gg 2l) \oplus \cdots"></div>
+    <div id="dbg-unt"></div>
+    <h3>Zero-excess: it takes forever to recover from a sparse state</h3>
+    <div class="eq" data-tex="\rho_t = \frac{\operatorname{popcount}(x_0,\dots,x_{n-1}) \text{ after } t \text{ twists}}{nw}, \qquad \rho_0 = \frac{1}{19968}"></div>
+    <div class="cols wide-left">
+      <div class="panel"><div id="zx-plot"></div><div class="stat" id="zx-stat"></div></div>
+      <div><p class="small">start with a state that has exactly one 1-bit. each new word only depends on three old ones, so the ones spread really slowly. it takes hundreds of thousands of outputs before the state looks random again (half the bits set, ρ ≈ ½). WELL (2006) was built to fix exactly this.</p></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ variants -->
+  <section id="variants">
+    <h2>All the variants in the prngs catalog</h2>
+    <p class="lede" id="var-lede"></p>
+    <div class="toolbar"><label class="inl">filter <input id="var-filter" type="search" placeholder="php, 64, sfmt, seed …" style="width:220px"></label><span class="note" id="var-count"></span></div>
+    <div class="tbl-wrap varwrap"><table class="tbl" id="var-table"></table></div>
+    <div id="var-notes"></div>
+    <h3>The family</h3>
+    <div class="cols">
+      <div class="panel">
+        <div class="ptitle"><span>TinyMT32: 127 bits, period 2¹²⁷ − 1</span></div>
+        <div class="eq" data-tex="31 + 3\cdot 32 = 127, \quad 2^{127}-1 \text{ prime}"></div>
+        <button id="fam-tiny">Open TinyMT32 in the debugger</button>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>SFMT19937: 128 bits per step, period a multiple of 2¹⁹⁹³⁷ − 1</span></div>
+        <div class="eq" data-tex="w_i = w_i A \oplus w_{i+122} B \oplus w_{i-2} C \oplus w_{i-1} D"></div>
+        <button id="fam-sfmt">Open SFMT19937 in the debugger</button>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>TinyMT64: two 64-bit words, still 127 bits</span></div>
+        <div class="eq" data-tex="2\cdot 64 - 1 = 127, \quad z = (s_0 + s_1) \oplus (s_0 \gg 8)"></div>
+        <button id="fam-tiny64">Open TinyMT64 in the debugger</button>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>MELG: MT plus one extra word, maximally equidistributed</span></div>
+        <div class="eq" data-tex="\ell \gets xA \oplus x_{i+M} \oplus \ell \oplus (\ell \ll \sigma_1),\quad x_i \gets x \oplus \ell \oplus (\ell \gg \sigma_2)"></div>
+        <button id="fam-melg">Open MELG19937-64 in the debugger</button>
+      </div>
+      <div class="panel">
+        <div class="ptitle"><span>Mersenne exponents in use</span></div>
+        <div class="eq" data-tex="\begin{gathered}607,\ 1279,\ 2281,\ 4253,\ 11213,\\ 19937,\ 44497,\ 86243,\ 132049,\ 216091\end{gathered}"></div>
+        <p class="small">every SFMT and MELG size in the catalog. all Mersenne exponents of course, for the reason up in the period section.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p>Everything here is ported from my private <code>prngs</code> repo (<code>dev/c/families/internal.c</code>, <code>internal_wave.c</code> and <code>kinds/*.c</code>), which isn't public. The Rust port matches that C code bit for bit: <code>cargo test</code> checks it against 290 reference lines (58 generators × 5 seeds). Where the original upstream code is public, the variants table links to it.</p>
+  <p>M. Matsumoto, T. Nishimura, “Mersenne Twister: a 623-dimensionally equidistributed uniform pseudo-random number generator”, ACM TOMACS 8(1), 1998 · M. Saito, M. Matsumoto, “SIMD-oriented Fast Mersenne Twister”, 2008 · M. Saito, M. Matsumoto, TinyMT, 2011 · F. Panneton, P. L’Ecuyer, M. Matsumoto, “Improved long-period generators based on linear recurrences modulo 2”, ACM TOMS 32(1), 2006 · S. Harase, T. Kimoto, MELG, ACM TOMS 44(3), 2018.</p>
+</footer>
+
+<script src="vendor/katex/katex.min.js"></script>
+<script src="js/wasm_bytes.js"></script>
+<script src="js/core.js"></script>
+<script src="js/programs.js"></script>
+<script src="js/debugger.js"></script>
+<script src="js/sections.js"></script>
+</body>
+</html>
